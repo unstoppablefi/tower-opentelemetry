@@ -1,5 +1,8 @@
 #![warn(clippy::pedantic)]
-use std::{borrow::Cow, error::Error as StdError, future::Future, pin::Pin, task::Poll, sync::Arc, backtrace::Backtrace};
+use std::{
+    backtrace::Backtrace, borrow::Cow, error::Error as StdError, future::Future, pin::Pin,
+    sync::Arc, task::Poll,
+};
 
 use futures_util::future::FutureExt;
 use http::{
@@ -10,12 +13,15 @@ use lazy_static::lazy_static;
 use opentelemetry::{
     global,
     propagation::{Extractor, Injector},
-    trace::{FutureExt as OtelFutureExt, SpanKind, StatusCode, TraceContextExt, Tracer, TracerProvider, TraceId, SpanId},
+    trace::{
+        FutureExt as OtelFutureExt, SpanId, SpanKind, Status, TraceContextExt, TraceId, Tracer,
+        TracerProvider,
+    },
     Context,
 };
 use opentelemetry_semantic_conventions::trace::{
-    HTTP_FLAVOR, HTTP_METHOD, HTTP_STATUS_CODE, HTTP_TARGET, HTTP_URL, HTTP_USER_AGENT,
-    NET_HOST_NAME,
+    EXCEPTION_STACKTRACE, HTTP_FLAVOR, HTTP_METHOD, HTTP_STATUS_CODE, HTTP_TARGET, HTTP_URL,
+    HTTP_USER_AGENT, NET_HOST_NAME,
 };
 use sysinfo::{System, SystemExt};
 
@@ -67,7 +73,10 @@ impl Layer {
     }
 }
 
-impl<S> tower_layer::Layer<S> for Layer where S: Clone {
+impl<S> tower_layer::Layer<S> for Layer
+where
+    S: Clone,
+{
     type Service = Service<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -85,11 +94,18 @@ pub struct Service<S: Clone> {
     tracer: Arc<global::BoxedTracer>,
 }
 
-impl<S> Service<S> where S: Clone {
+impl<S> Service<S>
+where
+    S: Clone,
+{
     fn new(inner: S) -> Self {
         Self {
             inner,
-            tracer: Arc::new(global::tracer_provider().versioned_tracer("tower-opentelemetry", Some(env!("CARGO_PKG_VERSION")), None)),
+            tracer: Arc::new(global::tracer_provider().versioned_tracer(
+                "tower-opentelemetry",
+                Some(env!("CARGO_PKG_VERSION")),
+                None,
+            )),
         }
     }
 }
@@ -101,7 +117,7 @@ where
     S::Future: 'static + Send,
     B: 'static,
     S::Error: std::fmt::Debug + StdError,
-    S: Clone
+    S: Clone,
 {
     type Error = S::Error;
     type Future = Pin<Box<CF<Self::Response, Self::Error>>>;
@@ -147,7 +163,7 @@ where
         {
             attributes.push(HTTP_USER_AGENT.string(user_agent.to_string()));
         }
-        builder.attributes = Some(attributes);
+        builder.attributes = Some(attributes.into_iter().collect());
         let span = self.tracer.build(builder);
         let cx = Context::current_with_span(span);
         let attachment = cx.clone().attach();
@@ -164,22 +180,23 @@ where
                     let span = cx.span();
                     span.set_attribute(HTTP_STATUS_CODE.i64(i64::from(ok_res.status().as_u16())));
                     if ok_res.status().is_server_error() {
-                        span.set_status(
-                            StatusCode::Error,
+                        span.set_status(Status::error(
                             ok_res
                                 .status()
                                 .canonical_reason()
                                 .map(ToString::to_string)
                                 .unwrap_or_default(),
-                        );
+                        ));
                     };
                     span.end();
                     Ok(ok_res)
                 }
                 Err(error) => {
                     let span = cx.span();
-                    span.set_status(StatusCode::Error, format!("{:?}", error));
-                    span.record_exception_with_stacktrace(&error, Backtrace::force_capture().to_string());
+                    span.set_status(Status::error(error.to_string()));
+                    span.set_attribute(
+                        EXCEPTION_STACKTRACE.string(Backtrace::force_capture().to_string()),
+                    );
                     span.end();
                     Err(error)
                 }
